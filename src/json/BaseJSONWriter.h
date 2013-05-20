@@ -11,9 +11,36 @@
 #include <string>
 #include <cassert>
 #include <stdio.h>
-#include <type_traits>
 
 namespace json {
+
+template <typename T> struct remove_const { typedef T type; };
+template <typename T> struct remove_const<const T> { typedef T type; };
+template <typename T> struct remove_volatile { typedef T type; };
+template <typename T> struct remove_volatile<volatile T> { typedef T type; };
+template <typename T> struct remove_cv : remove_const<typename remove_volatile<T>::type> {};
+template <typename T> struct is_unqualified_pointer { enum { value = false }; };
+template <typename T> struct is_unqualified_pointer<T*> { enum { value = true }; };
+template <typename T> struct is_pointer : is_unqualified_pointer<typename remove_cv<T>::type> {};
+template<bool _Test, class _Type = void> struct enable_if { };
+template<class _Type> struct enable_if<true, _Type> { typedef _Type type; };
+
+typedef char (&yes)[1];
+typedef char (&no)[2];
+
+template <typename B, typename D> struct Host
+{
+  operator B*() const;
+  operator D*();
+};
+
+template <typename B, typename D> struct is_base_of
+{
+  template <typename T> static yes check(D*, T);
+  static no check(B*, int);
+  static const bool value = sizeof(check(Host<B,D>(), int())) == sizeof(yes);
+};
+
 
 class BaseJSONWriter;
 
@@ -37,7 +64,9 @@ static const char op_nul = '0';
 
 static const unsigned int useDefaultSize = ((1 << 16) - 1);
 
-template<const char T> struct JSONOp { };
+template<const char T> struct JSONOp { 
+	JSONOp() {}
+};
 template<const char T> struct JSONBlockOp : public JSONOp<T> {
 	const long &capacity;
 	JSONBlockOp(const long &capacity = -1) : capacity(capacity) {}
@@ -92,7 +121,7 @@ private:
 		assert(("Can only write key-value pairs within an object", !((ispair && (block.type != Block::OBJECT)) || (!ispair && (block.type == Block::OBJECT)))));
 		assert(("Must start with an array or an object", isblock || block.type != Block::ROOT));
 		assert(("Can only write one object or array per instance", block.size == 0 || block.type != Block::ROOT));
-		assert(("Block capacity exceeded", block.capacity < 0 || block.size < block.capacity));
+		//assert(("Block capacity exceeded", block.capacity < 0 || block.size < block.capacity));
 
 		writeNextValue(block.size++ == 0, ++block.lineSize > block.maxLineSize);
 		if (block.lineSize > block.maxLineSize)
@@ -118,7 +147,7 @@ private:
 
 	BaseJSONWriter &closeBlock() {
 		assert(("Unmatched blocks", block.type != Block::ROOT && !blocks.empty()));
-		assert(("Reserved capacity not reached yet", block.capacity < 0 || block.size == block.capacity));
+		//assert(("Reserved capacity not reached yet", block.capacity < 0 || block.size == block.capacity));
 		assert(("Key written without value", !block.wroteKey));
 		assert(("Unknown block type", block.type == Block::OBJECT || block.type == Block::ARRAY));
 
@@ -183,7 +212,7 @@ private:
 		const size_t count = values.size();
 		const size_t bytes = count * sizeof(T);
 		if (writeOpenData(count, bytes)) {
-			for (std::vector<T>::const_iterator it = values.begin(); it != values.end(); ++it)
+			for (typename std::vector<T>::const_iterator it = values.begin(); it != values.end(); ++it)
 				writeDataItem((void*)&(*it), sizeof(T));
 			writeCloseData(count, bytes);
 		} else {
@@ -194,37 +223,36 @@ private:
 
 	template<class T, size_t n> inline void valueArray(const T (&value)[n], const bool &iskey = false) { valueArray(&value[0], n, iskey); }
 	template<class T> inline void valueArray(const T * const &values, const size_t &size, const bool &iskey = false) { checkKey(); data(values, size); }
-	template<> inline void valueArray<char>(const char * const &values, const size_t &size, const bool &iskey) { value(values, iskey); }
+	inline void valueArray(const char * const &values, const size_t &size, const bool &iskey) { value(values, iskey); }
 
-	typedef const char * char_ptr;
-	template<class T> inline void value(const T &value, const bool &iskey = false) { assert(("Not a serializable value", false)); }
-	template<class T> inline void value(const T * const &value, const bool &iskey = false) { assert(("Not a serializable value", false)); }
-	template<> inline void value<char>(const char * const &value, const bool &iskey) { writeValue(value, iskey); }
-	template<> inline void value<char_ptr>(const char_ptr &value, const bool &iskey) { writeValue(value, iskey); }
-	template<> inline void value<bool>(const bool &value, const bool &iskey) { writeValue(value, iskey); }
-	template<> inline void value<char>(const char &value, const bool &iskey) { writeValue(value, iskey); }
-	template<> inline void value<short>(const short &value, const bool &iskey) { writeValue(value, iskey); }
-	template<> inline void value<int>(const int &value, const bool &iskey) { writeValue(value, iskey); }
-	template<> inline void value<long >(const long &value, const bool &iskey) { writeValue(value, iskey); }
-	template<> inline void value<float>(const float &value, const bool &iskey) { writeValue(value, iskey); }
-	template<> inline void value<double>(const double &value, const bool &iskey) { writeValue(value, iskey); }
-	template<> inline void value<std::string>(const std::string &value, const bool &iskey) { writeValue(value.c_str(), iskey); }
-	template<> inline void value<unsigned char>(const unsigned char &value, const bool &iskey) { writeValue(value, iskey); }
-	template<> inline void value<unsigned short>(const unsigned short &value, const bool &iskey) { writeValue(value, iskey); }
-	template<> inline void value<unsigned int>(const unsigned int &value, const bool &iskey) { writeValue(value, iskey); }
-	template<> inline void value<unsigned long >(const unsigned long &value, const bool &iskey) { writeValue(value, iskey); }
+	//template<class T> inline void value(const T &value, const bool &iskey = false) { assert(("Not a serializable value", false)); }
+	//template<class T> inline void value(const T * const &value, const bool &iskey = false) { assert(("Not a serializable value", false)); }
+	inline void value(const char * const &value, const bool &iskey) { writeValue(value, iskey); }
+	inline void value(const bool &value, const bool &iskey) { writeValue(value, iskey); }
+	inline void value(const char &value, const bool &iskey) { writeValue(value, iskey); }
+	inline void value(const short &value, const bool &iskey) { writeValue(value, iskey); }
+	inline void value(const int &value, const bool &iskey) { writeValue(value, iskey); }
+	inline void value(const long &value, const bool &iskey) { writeValue(value, iskey); }
+	inline void value(const float &value, const bool &iskey) { writeValue(value, iskey); }
+	inline void value(const double &value, const bool &iskey) { writeValue(value, iskey); }
+	inline void value(const std::string &value, const bool &iskey) { writeValue(value.c_str(), iskey); }
+	inline void value(const unsigned char &value, const bool &iskey) { writeValue(value, iskey); }
+	inline void value(const unsigned short &value, const bool &iskey) { writeValue(value, iskey); }
+	inline void value(const unsigned int &value, const bool &iskey) { writeValue(value, iskey); }
+	inline void value(const unsigned long &value, const bool &iskey) { writeValue(value, iskey); }
 
 	template<class V, class N> inline void value(const V &value, const N &name, const bool &iskey = false) { assert(("Not implemented", false)); }
 
 private:
+	// Quick workaround because visual studio doesnt always deduct pointer correctly
 	template<class T> void _val(const T *v) { __ptr(v); }
-	template<class T> typename std::enable_if<!std::is_pointer<T>::value>::type _val(const T &v) { __val(v); }
+	template<class T> typename enable_if<!is_pointer<T>::value>::type _val(const T &v) { __val(v); }
 
-	template<class T> typename std::enable_if<!std::is_base_of<Serializable, T>::value, void>::type __val(const T &v) {
+	template<class T> typename enable_if<!is_base_of<Serializable, T>::value, void>::type __val(const T &v) {
 		if (!checkKey()) nextValue(inObject(), false);
 		value(v, block.wroteKey);
 	}
-	template<class T> typename std::enable_if<!std::is_base_of<Serializable, T>::value, void>::type __ptr(const T *v) { 
+	template<class T> typename enable_if<!is_base_of<Serializable, T>::value, void>::type __ptr(const T *v) { 
 		if (!checkKey()) nextValue(inObject(), false);
 		value(v, block.wroteKey);
 	}
@@ -281,11 +309,11 @@ public:
 		return *this;
 	}
 	/** WIP Write an enum value, where v is the scalar value and name is the (textual) representation of it */
-	template<class V, class N> BaseJSONWriter &val(const V &v, const N &name) {
+	/*template<class V, class N> BaseJSONWriter &val(const V &v, const N &name) {
 		if (!checkKey()) nextValue(inObject(), false);
 		value<T>(v, name, block.wroteKey);
 		return *this;
-	}
+	}*/
 	/* Write a fixed length array of values (usually a string) */
 	template<class T, size_t n> BaseJSONWriter &val(const T (&v)[n]) {
 		if (!checkKey()) nextValue(inObject(), false);
@@ -293,11 +321,11 @@ public:
 		return *this;
 	}
 	/** WIP Write an enum value, where v is the scalar value and n is the (textual) representation of it */
-	template<class V, class N, size_t n> BaseJSONWriter &val(const V &v, const N (&name)[n]) {
+	/*template<class V, class N, size_t n> BaseJSONWriter &val(const V &v, const N (&name)[n]) {
 		if (!checkKey()) nextValue(inObject(), false);
 		value<T>(v, name, block.wroteKey);
 		return *this;
-	}
+	}*/
 	/** Open an array, write the values and end the array, consider using .data() instead. */
 	template<class T> BaseJSONWriter &arr(const T * const &values, const size_t &size, const unsigned int &lineSize = 0) {
 		arr(size, lineSize);
@@ -309,7 +337,7 @@ public:
 	/** Open an array, write the values and end the array, consider using .data() instead. */
 	template<class T> BaseJSONWriter &arr(const std::vector<T> &values, const unsigned int &lineSize = 0) {
 		arr(values.size(), lineSize);
-		for (std::vector<T>::const_iterator it = values.begin(); it != values.end(); ++it)
+		for (typename std::vector<T>::const_iterator it = values.begin(); it != values.end(); ++it)
 			val(*it);
 		end();
 		return *this;
@@ -354,13 +382,11 @@ public:
 	}
 
 public:
-	template<const char T> inline BaseJSONWriter &op(const JSONOp<T> &op)		{ assert("Unknown operation"); }
-	template<const char T> inline BaseJSONWriter &op(const JSONBlockOp<T> &op)	{ assert("Unknown operation"); }
-	template<> inline BaseJSONWriter &op<op_is>(const JSONOp<op_is> &op)		{ return is(); }
-	template<> inline BaseJSONWriter &op<op_nul>(const JSONOp<op_nul> &op)		{ return nul(); }
-	template<> inline BaseJSONWriter &op<op_end>(const JSONOp<op_end> &op)		{ return end(); }
-	template<> inline BaseJSONWriter &op<op_arr>(const JSONBlockOp<op_arr> &op)	{ return arr(op.capacity); }
-	template<> inline BaseJSONWriter &op<op_obj>(const JSONBlockOp<op_obj> &op)	{ return obj(op.capacity); }
+	inline BaseJSONWriter &op(const JSONOp<op_is> &op)		{ return is(); }
+	inline BaseJSONWriter &op(const JSONOp<op_nul> &op)		{ return nul(); }
+	inline BaseJSONWriter &op(const JSONOp<op_end> &op)		{ return end(); }
+	inline BaseJSONWriter &op(const JSONBlockOp<op_arr> &op)	{ return arr(op.capacity); }
+	inline BaseJSONWriter &op(const JSONBlockOp<op_obj> &op)	{ return obj(op.capacity); }
 	template<class P> inline BaseJSONWriter &op(const JSONPtrOp<op_dat, P> &op)	{ return data(op.ptr, op.size); }
 
 public:
@@ -390,12 +416,6 @@ public:
 	template<class T> inline BaseJSONWriter &operator,(const std::vector<T *> &v)	{ return arr(v);		}
 	/** Stream an array as data after writing a key, sugar for .is.data(v); */
 	template<class T> inline BaseJSONWriter &operator=(const std::vector<T *> &v)	{ return is().arr(v);	}
-	/** Stream an array as data, sugar for .data(v); */
-	template<class T> inline BaseJSONWriter &operator<<(const std::vector<const T *> &v){ return arr(v);		}
-	/** Stream an array as data, sugar for .data(v); */
-	template<class T> inline BaseJSONWriter &operator,(const std::vector<const T *> &v)	{ return arr(v);		}
-	/** Stream an array as data after writing a key, sugar for .is.data(v); */
-	template<class T> inline BaseJSONWriter &operator=(const std::vector<const T *> &v)	{ return is().arr(v);	}
 	/** Stream an operator, sugar .op(v) */
 	template<const char T> inline BaseJSONWriter &operator<<(const JSONOp<T> &v){ return op(v); }
 	/** Stream an operator, sugar .op(v) */
