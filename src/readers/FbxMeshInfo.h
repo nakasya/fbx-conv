@@ -1,3 +1,19 @@
+/*******************************************************************************
+ * Copyright 2011 See AUTHORS file.
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+/** @author Xoppa */
 #ifdef _MSC_VER
 #pragma once
 #endif //_MSC_VER
@@ -9,9 +25,11 @@
 #include <sstream>
 #include <map>
 #include <algorithm>
+#include <functional>
 #include <assert.h>
 #include "util.h"
 #include "matrix3.h"
+#include "../log/log.h"
 
 using namespace fbxconv::modeldata;
 
@@ -20,6 +38,8 @@ namespace readers {
 	struct FbxMeshInfo {
 		// The source mesh of which the values below are extracted
 		FbxMesh * const mesh;
+		// The ID of the mesh (shape)
+		const std::string id;
 		// The maximum amount of blend weights per vertex
 		const unsigned int maxVertexBlendWeightCount;
 		// The actual amount of blend weights per vertex (<= maxVertexBlendWeightCount)
@@ -45,7 +65,7 @@ namespace readers {
 		// The number of mash parts within the mesh
 		int meshPartCount;
 		// The applied skin or 0 if not available
-		const FbxSkin * const skin;
+		FbxSkin * const skin;
 		// The blendweights per control point
 		std::vector<BlendWeight> *pointBlendWeights;
 		// The collection of bones per mesh part
@@ -79,8 +99,10 @@ namespace readers {
 		const FbxLayerElementArrayTemplate<int> *uvIndices[8];
 		bool uvOnPoint[8];
 
-		FbxMeshInfo(FbxMesh * const &mesh, const bool &usePackedColors, const unsigned int &maxVertexBlendWeightCount, const bool &forceMaxVertexBlendWeightCount, const unsigned int &maxNodePartBoneCount)
-			: mesh(mesh), 
+		fbxconv::log::Log *log;
+
+		FbxMeshInfo(fbxconv::log::Log *log, FbxMesh * const &mesh, const bool &usePackedColors, const unsigned int &maxVertexBlendWeightCount, const bool &forceMaxVertexBlendWeightCount, const unsigned int &maxNodePartBoneCount)
+			: mesh(mesh), log(log),
 			usePackedColors(usePackedColors),
 			maxVertexBlendWeightCount(maxVertexBlendWeightCount), 
 			vertexBlendWeightCount(0),
@@ -93,8 +115,9 @@ namespace readers {
 			pointBlendWeights(0),
 			skin((maxNodePartBoneCount > 0 && maxVertexBlendWeightCount > 0 && (unsigned int)mesh->GetDeformerCount(FbxDeformer::eSkin) > 0) ? static_cast<FbxSkin*>(mesh->GetDeformer(0, FbxDeformer::eSkin)) : 0),
 			bonesOverflow(false),
-			polyPartMap(new unsigned int[polyCount]),
-			polyPartBonesMap(new unsigned int[polyCount])
+			polyPartMap(polyCount > 0 ? new unsigned int[polyCount] : 0),
+			polyPartBonesMap(polyCount > 0 ? new unsigned int[polyCount] : 0),
+			id(getID(mesh))
 		{
 			meshPartCount = calcMeshPartCount();
 			partBones = std::vector<BlendBonesCollection>(meshPartCount, BlendBonesCollection(maxNodePartBoneCount));
@@ -107,7 +130,8 @@ namespace readers {
 			if (skin) {
 				fetchVertexBlendWeights();
 				fetchMeshPartsAndBones();
-			} else
+			}
+			else
 				fetchMeshParts();
 
 			fetchAttributes();
@@ -126,8 +150,8 @@ namespace readers {
 				delete[] partUVBounds;
 		}
 
-		inline const FbxNode *getBone(const unsigned int &idx) const {
-			return skin ? skin->GetCluster(idx)->GetLink() : 0;
+		inline FbxCluster *getBone(const unsigned int &idx) {
+			return skin ? skin->GetCluster(idx) : 0;
 		}
 
 		inline void getPosition(float * const &data, unsigned int &offset, const unsigned int &point) const {
@@ -212,7 +236,7 @@ namespace readers {
 
 		inline void getBlendWeight(float * const &data, unsigned int &offset, const unsigned int &weightIndex, const unsigned int &poly, const unsigned int &polyIndex, const unsigned int &point) const {
 			const std::vector<BlendWeight> &weights = pointBlendWeights[point];
-			const unsigned int s = weights.size();
+			const unsigned int s = (unsigned int)weights.size();
 			const BlendBones &bones = partBones[polyPartMap[poly]].bones[polyPartBonesMap[poly]];
 			data[offset++] = weightIndex < s ? (float)bones.idx(weights[weightIndex].index) : 0.f;
 			data[offset++] = weightIndex < s ? weights[weightIndex].weight : 0.f;
@@ -242,6 +266,17 @@ namespace readers {
 			getVertex(data, offset, poly, polyIndex, point, uvTransforms);
 		}
 	private:
+		static std::string getID(FbxMesh * const &mesh) {
+			static int idCounter = 0;
+			const char *name = mesh->GetName();
+			std::stringstream ss;
+			if (name != 0 && strlen(name) > 1)
+				ss << name;
+			else
+				ss << "shape" << (++idCounter);
+			return ss.str();
+		}
+		
 		unsigned int calcMeshPartCount() {
 			int mp, mpc = 0;
 			for (unsigned int poly = 0; poly < polyCount; poly++) {
@@ -315,6 +350,7 @@ namespace readers {
 				}
 			}
 			// Sort the weights, so the most significant weights are first, remove unneeded weights and normalize the remaining
+			bool error = false;
 			for (unsigned int i = 0; i < pointCount; i++) {
 				std::sort(pointBlendWeights[i].begin(), pointBlendWeights[i].end(), std::greater<BlendWeight>());
 				if (pointBlendWeights[i].size() > maxVertexBlendWeightCount)
@@ -322,13 +358,18 @@ namespace readers {
 				float len = 0.f;
 				for (std::vector<BlendWeight>::const_iterator itr = pointBlendWeights[i].begin(); itr != pointBlendWeights[i].end(); ++itr)
 					len += (*itr).weight;
-				for (std::vector<BlendWeight>::iterator itr = pointBlendWeights[i].begin(); itr != pointBlendWeights[i].end(); ++itr)
-					(*itr).weight /= len;
+				if (len == 0.f)
+					error = true;
+				else
+					for (std::vector<BlendWeight>::iterator itr = pointBlendWeights[i].begin(); itr != pointBlendWeights[i].end(); ++itr)
+						(*itr).weight /= len;
 				if (pointBlendWeights[i].size() > vertexBlendWeightCount)
-					vertexBlendWeightCount = pointBlendWeights[i].size();
+					vertexBlendWeightCount = (unsigned int)pointBlendWeights[i].size();
 			}
 			if (vertexBlendWeightCount > 0 && forceMaxVertexBlendWeightCount)
 				vertexBlendWeightCount = maxVertexBlendWeightCount;
+			if (error)
+				log->warning(log::wSourceConvertFbxZeroWeights);
 		}
 
 		void fetchMeshPartsAndBones() {
@@ -337,8 +378,10 @@ namespace readers {
 				int mp = -1;
 				for (int i = 0; i < elementMaterialCount && mp < 0; i++)
 					mp = mesh->GetElementMaterial(i)->GetIndexArray()[poly];
-				if (mp < 0 || mp >= meshPartCount)
+				if (mp < 0 || mp >= meshPartCount) {
 					polyPartMap[poly] = -1;
+					log->warning(log::wSourceConvertFbxNoPolyPart, mesh->GetName(), poly);
+				}
 				else {
 					polyPartMap[poly] = mp;
 					const unsigned int polySize = mesh->GetPolygonSize(poly);
@@ -359,8 +402,10 @@ namespace readers {
 				mp = -1;
 				for (int i = 0; i < elementMaterialCount && mp < 0; i++)
 					mp = mesh->GetElementMaterial(i)->GetIndexArray()[poly];
-				if (mp < 0 || mp >= meshPartCount)
+				if (mp < 0 || mp >= meshPartCount) {
 					polyPartMap[poly] = -1;
+					log->warning(log::wSourceConvertFbxNoPolyPart, mesh->GetName(), poly);
+				}
 				else
 					polyPartMap[poly] = mp;
 			}

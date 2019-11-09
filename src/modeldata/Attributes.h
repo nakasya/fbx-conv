@@ -1,3 +1,19 @@
+/*******************************************************************************
+ * Copyright 2011 See AUTHORS file.
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+/** @author Xoppa */
 #ifdef _MSC_VER 
 #pragma once
 #endif
@@ -83,7 +99,7 @@ namespace modeldata {
 
 	#define ATTRIBUTE_SIZE(idx) (AttributeTypes[idx].size())
 
-	struct Attributes : public json::Serializable {
+	struct Attributes : public json::ConstSerializable {
 		unsigned long value;
 
 		Attributes() : value(0) {}
@@ -100,7 +116,7 @@ namespace modeldata {
 			unsigned int result = 0;
 			for (unsigned int i = 0; i < ATTRIBUTE_COUNT; i++)
 				if (has(i))
-					result += ATTRIBUTE_SIZE(i);
+					result += (unsigned int)ATTRIBUTE_SIZE(i);
 			return result;
 		}
 
@@ -132,7 +148,7 @@ namespace modeldata {
 			for (unsigned int i = 0; i < ATTRIBUTE_COUNT; i++) {
 				if (!has(i))
 					continue;
-				const unsigned short is = ATTRIBUTE_SIZE(i);
+				const unsigned short is = (unsigned short)ATTRIBUTE_SIZE(i);
 				if ((s + is) > v)
 					return AttributeTypes[i][v-s];
 				s+=is;

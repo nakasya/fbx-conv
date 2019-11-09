@@ -1,3 +1,19 @@
+/*******************************************************************************
+ * Copyright 2011 See AUTHORS file.
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+/** @author Xoppa */
 #ifdef _MSC_VER 
 #pragma once
 #endif
@@ -12,12 +28,12 @@
 namespace fbxconv {
 namespace modeldata {
 	/** A mesh is responsable for freeing all parts and vertices it contains. */
-	struct Mesh : public json::Serializable {
+	struct Mesh : public json::ConstSerializable {
 		/** the attributes the vertices in this mesh describe */
 		Attributes attributes;
 		/** the size (in number of floats) of each vertex */
 		unsigned int vertexSize;
-		/** the number of vertices this mesh contains */
+		/** the vertices that this mesh contains */
 		std::vector<float> vertices;
 		/** hash lookup table for faster duplicate vertex checking */
 		std::vector<unsigned int> hashes;
@@ -52,19 +68,23 @@ namespace modeldata {
 		inline unsigned int indexCount() {
 			unsigned int result = 0;
 			for (std::vector<MeshPart *>::const_iterator itr = parts.begin(); itr != parts.end(); ++itr)
-				result += (*itr)->indices.size();
+				result += (unsigned int)(*itr)->indices.size();
 			return result;
+		}
+
+		inline unsigned int vertexCount() {
+			return vertices.size() / vertexSize;
 		}
 
 		inline unsigned int add(const float *vertex) {
 			const unsigned int hash = calcHash(vertex, vertexSize);
-			const unsigned int n = hashes.size();
+			const unsigned int n = (unsigned int)hashes.size();
 			for (unsigned int i = 0; i < n; i++)
 				if ((hashes[i] == hash) && compare(&vertices[i*vertexSize], vertex, vertexSize))
 					return i;
 			hashes.push_back(hash);
 			vertices.insert(vertices.end(), &vertex[0], &vertex[vertexSize]);
-			return hashes.size() - 1;
+			return (unsigned int)hashes.size() - 1;
 		}
 
 		inline unsigned int calcHash(const float *vertex, const unsigned int size) {

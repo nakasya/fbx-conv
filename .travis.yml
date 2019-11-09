@@ -1,0 +1,39 @@
+git:
+    depth: 3
+matrix:
+  include:
+  - name: "Linux FBX-Conv build"
+    language: cpp
+    os: linux
+    before_install:
+      - wget -O premake5.tar.gz https://github.com/premake/premake-core/releases/download/v5.0.0-alpha14/premake-5.0.0-alpha14-linux.tar.gz
+      - tar -xf premake5.tar.gz
+      - export PATH=$PATH:$PWD
+      - wget http://images.autodesk.com/adsk/files/fbx20151_fbxsdk_linux.tar.gz
+      - tar -xf fbx20151_fbxsdk_linux.tar.gz
+      - chmod +x fbx20151_fbxsdk_linux
+      - mkdir fbx-sdk-linux
+      - yes yes | ./fbx20151_fbxsdk_linux fbx-sdk-linux
+      - export FBX_SDK_ROOT=$PWD/fbx-sdk-linux
+      - export LD_LIBRARY_PATH=$FBX_SDK_ROOT/lib/gcc/x64/release/
+      - ./generate_makefile
+      - cd build/gmake/
+    install: true
+    script: make config=release
+  - name: "OSX FBX-Conv build"
+    language: cpp
+    os: osx
+    before_install:
+      - wget -O premake5.tar.gz https://github.com/premake/premake-core/releases/download/v5.0.0-alpha14/premake-5.0.0-alpha14-macosx.tar.gz
+      - tar -xf premake5.tar.gz
+      - export PATH=$PATH:$PWD
+      - wget http://images.autodesk.com/adsk/files/fbx20151_fbxsdk_clang_mac.pkg.tgz
+      - tar -xf fbx20151_fbxsdk_clang_mac.pkg.tgz
+      - sudo installer -pkg fbx20151_fbxsdk_clang_macos.pkg -target /
+      - sudo mv "/Applications/Autodesk/FBX SDK/" /Applications/Autodesk/SDK/
+      - export FBX_SDK_ROOT=/Applications/Autodesk/SDK/2015.1/
+      - export LD_LIBRARY_PATH=/Applications/Autodesk/SDK/2015.1/lib/clang/release/
+      - ./generate_xcode
+      - cd build/xcode4/
+    install: true
+    script: xcodebuild -configuration Release

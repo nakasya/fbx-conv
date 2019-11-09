@@ -1,81 +1,87 @@
+/*******************************************************************************
+ * Copyright 2011 See AUTHORS file.
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+/** @author Xoppa */
 #ifndef FBXCONVCOMMAND_H
 #define FBXCONVCOMMAND_H
 
-#define FILETYPE_AUTO			0x00
-#define FILETYPE_FBX			0x10
-#define FILETYPE_G3DB			0x20
-#define FILETYPE_G3DJ			0x21
-#define FILETYPE_OUT_DEFAULT	FILETYPE_G3DB
-#define FILETYPE_IN_DEFAULT		FILETYPE_FBX
-
 //#define ALLOW_INPUT_TYPE
 
+#include "Settings.h"
 #include <string>
+#include "log/log.h"
 
 namespace fbxconv {
 
 struct FbxConvCommand {
 	const int argc;
 	const char **argv;
-	std::string error;
-	std::string inFile;
-	int inType;
-	std::string outFile;
-	int outType;
-	bool flipV;
-	bool packColors;
+	int error;
 	bool help;
-	bool verbose;
-	int maxNodePartBonesCount;
-	int maxVertexBonesCount;
-	int maxVertexCount;
-	int maxIndexCount;
+	Settings *settings;
+	log::Log *log;
 
-	FbxConvCommand(const int &argc, const char** argv) : argc(argc), argv(argv) {
+	FbxConvCommand(log::Log *log, const int &argc, const char** argv, Settings *settings)
+		: log(log), argc(argc), argv(argv), settings(settings), error(log::iNoError) {
 		help = (argc <= 1);
-		flipV = false;
-		packColors = false;
-		verbose = false;
-		maxNodePartBonesCount = (1<<15)-1;
-		maxVertexBonesCount = 4;
-		maxVertexCount = (1<<15)-1;
-		maxIndexCount = (1<<15)-1;
-		outType = inType = FILETYPE_AUTO;
+
+		settings->flipV = false;
+		settings->packColors = false;
+		settings->verbose = false;
+		settings->maxNodePartBonesCount = 12;
+		settings->maxVertexBonesCount = 4;
+		settings->maxVertexCount = (1<<15)-1;
+		settings->maxIndexCount = (1<<15)-1;
+		settings->outType = FILETYPE_AUTO;
+		settings->inType = FILETYPE_AUTO;
+
 		for (int i = 1; i < argc; i++) {
 			const char *arg = argv[i];
-			const int len = strlen(arg);
+			const int len = (int)strlen(arg);
 			if (len > 1 && arg[0] == '-') {
 				if (arg[1] == '?')
 					help = true;
 				else if (arg[1] == 'f')
-					flipV = true;
+					settings->flipV = true;
 				else if (arg[1] == 'v')
-					verbose = true;
+					settings->verbose = true;
 				else if (arg[1] == 'p')
-					packColors = true;
+					settings->packColors = true;
 				else if ((arg[1] == 'i') && (i + 1 < argc))
-					inType = parseType(argv[++i]);
+					settings->inType = parseType(argv[++i]);
 				else if ((arg[1] == 'o') && (i + 1 < argc))
-					outType = parseType(argv[++i]);
+					settings->outType = parseType(argv[++i]);
 				else if ((arg[1] == 'b') && (i + 1 < argc))
-					maxNodePartBonesCount = atoi(argv[++i]);
+					settings->maxNodePartBonesCount = atoi(argv[++i]);
 				else if ((arg[1] == 'w') && (i + 1 < argc))
-					maxVertexBonesCount = atoi(argv[++i]);
+					settings->maxVertexBonesCount = atoi(argv[++i]);
 				else if ((arg[1] == 'm') && (i + 1 < argc))
-					maxVertexCount = maxIndexCount = atoi(argv[++i]);
+					settings->maxVertexCount = settings->maxIndexCount = atoi(argv[++i]);
 				else
-					((error = "Unknown commandline option '") += arg) += "'";
+					log->error(error = log::eCommandLineUnknownOption, arg);
 			}
-			else if (inFile.length() < 1)
-				inFile = arg;
-			else if (outFile.length() < 1)
-				outFile = arg;
+			else if (settings->inFile.length() < 1)
+				settings->inFile = arg;
+			else if (settings->outFile.length() < 1)
+				settings->outFile = arg;
 			else
-				((error = "Unknown commandline argument '") += arg) += "'";
-			if (!error.empty())
+				log->error(error = log::eCommandLineUnknownArgument, arg);
+			if (error != log::iNoError)
 				break;
 		}
-		if (error.empty())
+		if (error == log::iNoError)
 			validate();
 	}
 
@@ -100,7 +106,7 @@ struct FbxConvCommand {
 		printf("-f       : Flip the V texture coordinates.\n");
 		printf("-p       : Pack vertex colors to one float.\n");
 		printf("-m <size>: The maximum amount of vertices or indices a mesh may contain (default: 32k)\n");
-		printf("-b <size>: The maximum amount of bones a nodepart can contain (default: unlimited)\n");
+		printf("-b <size>: The maximum amount of bones a nodepart can contain (default: 12)\n");
 		printf("-w <size>: The maximum amount of bone weights per vertex (default: 4)\n");
 		printf("-v       : Verbose: print additional progress information\n");
 		printf("\n");
@@ -111,30 +117,32 @@ struct FbxConvCommand {
 	}
 private:
 	void validate() {
-		if (inFile.empty()) {
-			error = "No input file specified";
+		if (settings->inFile.empty()) {
+			log->error(error = log::eCommandLineMissingInputFile);
 			return;
 		}
 #ifdef ALLOW_INPUT_TYPE
 		if (inType == FILETYPE_AUTO)
 			inType = guessType(inFile, FILETYPE_IN_DEFAULT);
 #else
-		inType = FILETYPE_IN_DEFAULT;
+		settings->inType = FILETYPE_IN_DEFAULT;
 #endif
-		if (outFile.empty())
-			setExtension(outFile = inFile, outType = (outType == FILETYPE_AUTO ? FILETYPE_OUT_DEFAULT : outType));
-		else if (outType == FILETYPE_AUTO)
-			outType = guessType(outFile);
-		if (maxVertexBonesCount < 0 || maxVertexBonesCount > 8) {
-			error = "Maximum vertex weights must be between 0 and 8";
+		if (settings->outFile.empty())
+			setExtension(
+				settings->outFile = settings->inFile, 
+				settings->outType = (settings->outType == FILETYPE_AUTO ? FILETYPE_OUT_DEFAULT : settings->outType));
+		else if (settings->outType == FILETYPE_AUTO)
+			settings->outType = guessType(settings->outFile);
+		if (settings->maxVertexBonesCount < 0 || settings->maxVertexBonesCount > 8) {
+			log->error(error = log::eCommandLineInvalidVertexWeight);
 			return;
 		}
-		if (maxNodePartBonesCount < maxVertexBonesCount) {
-			error = "Maximum bones per nodepart must be greater or equal to the maximum vertex weights";
+		if (settings->maxNodePartBonesCount < settings->maxVertexBonesCount) {
+			log->error(error = log::eCommandLineInvalidBoneCount);
 			return;
 		}
-		if (maxVertexCount < 0 || maxVertexCount > (1<<15)-1) {
-			error = "Maximum vertex count must be between 0 and 32k";
+		if (settings->maxVertexCount < 0 || settings->maxVertexCount > (1<<15)-1) {
+			log->error(error = log::eCommandLineInvalidVertexCount);
 			return;
 		}
 	}
@@ -147,12 +155,12 @@ private:
 		else if (stricmp(arg, "g3dj")==0)
 			return FILETYPE_G3DJ;
 		if (def < 0)
-			((error = "Unknown filetype '") += arg) += "'";
+			log->error(error = log::eCommandLineUnknownFiletype, arg);
 		return def;
 	}
 
 	int guessType(const std::string &fn, const int &def = -1) {
-		int o = fn.find_last_of('.');
+		int o = (int)fn.find_last_of('.');
 		if (o == std::string::npos)
 			return def;
 		std::string ext = fn.substr(++o, fn.length() - o);
@@ -160,7 +168,7 @@ private:
 	}
 
 	void setExtension(std::string &fn, const std::string &ext) const {
-		int o = fn.find_last_of('.');
+		int o = (int)fn.find_last_of('.');
 		if (o == std::string::npos)
 			fn += "." + ext;
 		else

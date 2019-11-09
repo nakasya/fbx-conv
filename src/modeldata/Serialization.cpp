@@ -1,3 +1,19 @@
+/*******************************************************************************
+ * Copyright 2011 See AUTHORS file.
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+/** @author Xoppa */
 #include "Node.h"
 #include "NodePart.h"
 #include "Animation.h"
@@ -94,18 +110,24 @@ void MeshPart::serialize(json::BaseJSONWriter &writer) const {
 void Material::serialize(json::BaseJSONWriter &writer) const {
 	writer << json::obj;
 	writer << "id" = id;
-	if (ambient[0] != 0.f && ambient[1] != 0.f && ambient[2] != 0.f)
-		writer << "ambient" = ambient;
-	if (diffuse[0] != 0.f && diffuse[1] != 0.f && diffuse[2] != 0.f)
-		writer << "diffuse" = diffuse;
-	if (emissive[0] != 0.f && emissive[1] != 0.f && emissive[2] != 0.f)
-		writer << "emissive" = emissive;
-	if (opacity != 1.f)
-		writer << "opacity" = opacity;
-	if (specular[0] != 0.f && specular[1] != 0.f && specular[2] != 0.f)
-		writer << "specular" = specular;
-	if (shininess != 0.f)
-		writer << "shininess" = shininess;
+	if (ambient.valid)
+		writer << "ambient" = ambient.value;
+	if (diffuse.valid)
+		writer << "diffuse" = diffuse.value;
+	if (emissive.valid) {
+		float z[3] = {
+			emissive.value[0] * emissiveFactor.value,
+			emissive.value[1] * emissiveFactor.value,
+			emissive.value[2] * emissiveFactor.value
+			};
+		writer << "emissive" = z;
+	}
+	if (opacity.valid)
+		writer << "opacity" = opacity.value;
+	if (specular.valid)
+		writer << "specular" = specular.value;
+	if (shininess.valid)
+		writer << "shininess" = shininess.value;
 	if (!textures.empty())
 		writer << "textures" = textures;
 	writer << json::end;
@@ -139,14 +161,27 @@ void Node::serialize(json::BaseJSONWriter &writer) const {
 	writer << json::end;
 }
 
+template<class T, size_t n> void writeAsFloat(json::BaseJSONWriter &writer, const char *k, const T(&v)[n]) {
+	static float tmp[n];
+	for (int i = 0; i < n; ++i)
+		tmp[i] = (float)v[i];
+	writer << k << tmp;
+}
+
 void NodePart::serialize(json::BaseJSONWriter &writer) const {
 	writer << json::obj;
 	writer << "meshpartid" = meshPart->id;
 	writer << "materialid" = material->id;
 	if (!bones.empty()) {
-		writer.val("bones").is().arr(bones.size(), 4);
-		for (std::vector<Node *>::const_iterator it = bones.begin(); it != bones.end(); ++it)
-			writer << (*it)->id ;
+		writer.val("bones").is().arr();
+		for (std::vector<std::pair<Node *, FbxAMatrix> >::const_iterator it = bones.begin(); it != bones.end(); ++it) {
+			writer << json::obj;
+			writer << "node" = it->first->id;
+			writeAsFloat(writer, "translation", it->second.GetT().mData);
+			writeAsFloat(writer, "rotation", it->second.GetQ().mData);
+			writeAsFloat(writer, "scale", it->second.GetS().mData);
+			writer << json::end;
+		}
 		writer.end();
 	}
 	if (!uvMapping.empty()) {

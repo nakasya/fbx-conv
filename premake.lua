@@ -16,6 +16,10 @@ if not FBX_SDK_ROOT then
 	printf("Set it to something like: C:\\Program Files\\Autodesk\\FBX\\FBX SDK\\2013.3")
 	os.exit()
 end
+BUILD_NUMBER = os.getenv("BUILD_NUMBER")
+if not BUILD_NUMBER then
+	BUILD_NUMBER = 0
+end
 
 -- avert your eyes children!
 if string.find(_ACTION, "xcode") then
@@ -57,6 +61,7 @@ project "fbx-conv"
 	}
 	defines {
 		"FBXSDK_NEW_API",
+		"BUILD_NUMBER=" .. BUILD_NUMBER,
 	}
 	--- debugdir "."
 
@@ -83,24 +88,29 @@ project "fbx-conv"
 			"_CRT_SECURE_NO_WARNINGS",
 			"_CRT_NONSTDC_NO_WARNINGS"
 		}
-		libdirs {
-			(FBX_SDK_ROOT .. "/lib/vs2010/x86"),
+		includedirs {
+			"C:\\Program Files\\Autodesk\\FBX\\FBX SDK\\2015.1\\include"
+		}
+		libdirs {			
 			"./libs/libpng/lib/windows/x86",
 			"./libs/zlib/lib/windows/x86",
 		}
 		links {
 			"libpng14",
 			"zlib",
+			"libfbxsdk-md",
 		}
 		
 	configuration { "vs*", "Debug" }
-		links {
-			"fbxsdk-2013.3-mdd",
+		libdirs {
+			-- (FBX_SDK_ROOT .. "/lib/vs2010/x86/debug"),
+			"C:\\Program Files\\Autodesk\\FBX\\FBX SDK\\2015.1\\lib\\vs2013\\x86\\debug",
 		}
 		
 	configuration { "vs*", "Release" }
-		links {
-			"fbxsdk-2013.3-md",
+		libdirs {
+			-- (FBX_SDK_ROOT .. "/lib/vs2010/x86/release"),
+			"C:\\Program Files\\Autodesk\\FBX\\FBX SDK\\2015.1\\lib\\vs2013\\x86\\release",
 		}
 
 	--- LINUX ----------------------------------------------------------
@@ -110,7 +120,6 @@ project "fbx-conv"
 		-- TODO: while using x64 will likely be fine for most people nowadays,
 		--       we still need to make this configurable
 		libdirs {
-			(FBX_SDK_ROOT .. "/lib/gcc4/x64"),
 			"./libs/libpng/lib/linux/x64",
 			"./libs/zlib/lib/linux/x64",
 		}
@@ -118,26 +127,31 @@ project "fbx-conv"
 			"png",
 			"z",
 			"pthread",
+			"fbxsdk",
+			"dl",
 		}
 
 	configuration { "linux", "Debug" }
-		links {
-			"fbxsdk-2013.3-staticd",
-			"dl",
+		libdirs {
+			(FBX_SDK_ROOT .. "/lib/gcc4/x64/debug"),
 		}
 		
 	configuration { "linux", "Release" }
-		links {
-			"fbxsdk-2013.3-static",
-			"dl",
+		libdirs {
+			(FBX_SDK_ROOT .. "/lib/gcc4/x64/release"),
 		}
 
 	--- MAC ------------------------------------------------------------
 	configuration { "macosx" }
 		kind "ConsoleApp"
 		buildoptions { "-Wall" }
+		
+		xcodebuildsettings {
+			["ALWAYS_SEARCH_USER_PATHS"] = "YES"
+		}
+
 		libdirs {
-			(FBX_SDK_ROOT .. "/lib/gcc4/ub"),
+			(FBX_SDK_ROOT .. "/lib/clang"),
 			"./libs/libpng/lib/macosx",
 			"./libs/zlib/lib/macosx",
 		}
@@ -145,14 +159,15 @@ project "fbx-conv"
 			"png",
 			"z",
 			"CoreFoundation.framework",
+			"fbxsdk",
 		}
 
 	configuration { "macosx", "Debug" }
-		links {
-			"fbxsdk-2013.3-staticd",
+		libdirs {
+			(FBX_SDK_ROOT .. "/lib/clang/debug"),
 		}
 		
 	configuration { "macosx", "Release" }
-		links {
-			"fbxsdk-2013.3-static",
+		libdirs {
+			(FBX_SDK_ROOT .. "/lib/clang/release"),
 		}

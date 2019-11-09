@@ -1,3 +1,19 @@
+/*******************************************************************************
+ * Copyright 2011 See AUTHORS file.
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+/** @author Xoppa */
 #ifdef _MSC_VER 
 #pragma once
 #endif
@@ -44,7 +60,7 @@ template <typename B, typename D> struct is_base_of
 
 class BaseJSONWriter;
 
-struct Serializable {
+struct ConstSerializable {
 	virtual void serialize(BaseJSONWriter &writer) const = 0;
 };
 
@@ -180,10 +196,24 @@ protected:
 	virtual void writeValue(const unsigned short &value, const bool &iskey = false) = 0;
 	virtual void writeValue(const unsigned int &value, const bool &iskey = false) = 0;
 	virtual void writeValue(const unsigned long &value, const bool &iskey = false) = 0;
-	// If writeOpenData returns false, it falls back on writing out an array
-	virtual bool writeOpenData(const size_t &items, const size_t &bytes) { return false; }
-	virtual void writeDataItem(const void * const &value, const size_t &bytes) {}
-	virtual void writeCloseData(const size_t &items, const size_t &bytes) {}
+	// If writeOpenXXXData returns false, it falls back on writing out an array
+	inline virtual bool writeOpenFloatData(const size_t& count) { return false; }
+	inline virtual bool writeOpenDoubleData(const size_t& count) { return false; }
+	inline virtual bool writeOpenShortData(const size_t& count) { return false; }
+	inline virtual bool writeOpenUShortData(const size_t& count) { return false; }
+	inline virtual bool writeOpenIntData(const size_t& count) { return false; }
+	inline virtual bool writeOpenUIntData(const size_t& count) { return false; }
+	inline virtual bool writeOpenLongData(const size_t& count) { return false; }
+	inline virtual bool writeOpenULongData(const size_t& count) { return false; }
+	inline virtual void writeFloatData(const float * const &values, const size_t &count) {}
+	inline virtual void writeDoubleData(const double * const &values, const size_t &count) {}
+	inline virtual void writeShortData(const short * const &values, const size_t &count) {}
+	inline virtual void writeUShortData(const unsigned short * const &values, const size_t &count) {}
+	inline virtual void writeIntData(const int * const &values, const size_t &count) {}
+	inline virtual void writeUIntData(const unsigned int * const &values, const size_t &count) {}
+	inline virtual void writeLongData(const long * const &values, const size_t &count) {}
+	inline virtual void writeULongData(const unsigned long * const &values, const size_t &count) {}
+	inline virtual void writeCloseData() {}
 
 private:
 	bool checkKey(const bool &allowKey = true) {
@@ -196,12 +226,30 @@ private:
 		return !block.wroteKey;
 	}
 
+	template<class T> inline bool openData(const T &dummy, const size_t &items) { return false; }
+	inline bool openData(const float &dummy, const size_t &items) { return writeOpenFloatData(items); }
+	inline bool openData(const double &dummy, const size_t &items) { return writeOpenDoubleData(items); }
+	inline bool openData(const short &dummy, const size_t &items) { return writeOpenShortData(items); }
+	inline bool openData(const unsigned short &dummy, const size_t &items) { return writeOpenUShortData(items); }
+	inline bool openData(const int &dummy, const size_t &items) { return writeOpenIntData(items); }
+	inline bool openData(const unsigned int &dummy, const size_t &items) { return writeOpenUIntData(items); }
+	inline bool openData(const long &dummy, const size_t &items) { return writeOpenLongData(items); }
+	inline bool openData(const unsigned long &dummy, const size_t &items) { return writeOpenULongData(items); }
+	template<class T> inline void dataItem(const T * const &value, const size_t &count) {}
+	inline void dataItem(const float * const &value, const size_t &count) { writeFloatData(value, count); }
+	inline void dataItem(const double * const &value, const size_t &count) { writeDoubleData(value, count); }
+	inline void dataItem(const short * const &value, const size_t &count) { writeShortData(value, count); }
+	inline void dataItem(const unsigned short * const &value, const size_t &count) { writeUShortData(value, count); }
+	inline void dataItem(const int * const &value, const size_t &count) { writeIntData(value, count); }
+	inline void dataItem(const unsigned int * const &value, const size_t &count) { writeUIntData(value, count); }
+	inline void dataItem(const long * const &value, const size_t &count) { writeLongData(value, count); }
+	inline void dataItem(const unsigned long * const &value, const size_t &count) { writeULongData(value, count); }
+	
 	template<class T, size_t n> inline void values(const T (&value)[n], const unsigned int &lineSize = 0) { values(&value[0], n, lineSize); }
 	template<class T> inline void values(const T * const &values, const size_t &count, const unsigned int &lineSize = 0) {
-		const size_t bytes = count * sizeof(T);
-		if (writeOpenData(count, bytes)) {
-			writeDataItem((void*)values, bytes);
-			writeCloseData(count, bytes);
+		if (openData(values[0], count)) {
+			dataItem(values, count);
+			writeCloseData();
 		} else {
 			checkKey();
 			arr(values, count, lineSize);
@@ -211,10 +259,10 @@ private:
 	template<class T> inline void values(const std::vector<T> &values, const unsigned int &lineSize = 0) {
 		const size_t count = values.size();
 		const size_t bytes = count * sizeof(T);
-		if (writeOpenData(count, bytes)) {
+		if (count > 0 && openData(values[0], count)) {
 			for (typename std::vector<T>::const_iterator it = values.begin(); it != values.end(); ++it)
-				writeDataItem((void*)&(*it), sizeof(T));
-			writeCloseData(count, bytes);
+				dataItem(&(*it), 1);
+			writeCloseData();
 		} else {
 			checkKey();
 			arr(values, lineSize);
@@ -248,21 +296,20 @@ private:
 	template<class T> void _val(const T *v) { __ptr(v); }
 	template<class T> typename enable_if<!is_pointer<T>::value>::type _val(const T &v) { __val(v); }
 
-	template<class T> typename enable_if<!is_base_of<Serializable, T>::value, void>::type __val(const T &v) {
+	template<class T> typename enable_if<!is_base_of<ConstSerializable, T>::value, void>::type __val(const T &v) {
 		if (!checkKey()) nextValue(inObject(), false);
 		value(v, block.wroteKey);
 	}
-	template<class T> typename enable_if<!is_base_of<Serializable, T>::value, void>::type __ptr(const T *v) { 
+	template<class T> typename enable_if<!is_base_of<ConstSerializable, T>::value, void>::type __ptr(const T *v) { 
 		if (!checkKey()) nextValue(inObject(), false);
 		value(v, block.wroteKey);
 	}
-	void __val(const Serializable &v) {
+	void __val(const ConstSerializable &v) {
 		v.serialize(*this);
 	}
-	void __ptr(const Serializable *v) {
+	void __ptr(const ConstSerializable *v) {
 		v->serialize(*this);
 	}
-
 public:
 	unsigned int defaultDataLineSize;
 

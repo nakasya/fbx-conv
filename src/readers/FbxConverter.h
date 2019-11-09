@@ -1,3 +1,19 @@
+/*******************************************************************************
+ * Copyright 2011 See AUTHORS file.
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+/** @author Xoppa */
 #ifdef _MSC_VER
 #pragma once
 #endif //_MSC_VER
@@ -5,12 +21,14 @@
 #define FBXCONV_READERS_FBXCONVERTER_H
 
 #include <fbxsdk.h>
-#include "../modeldata/Model.h"
+#include "../Settings.h"
+#include "Reader.h"
 #include <sstream>
 #include <map>
 #include <algorithm>
 #include "util.h"
 #include "FbxMeshInfo.h"
+#include "../log/log.h"
 
 using namespace fbxconv::modeldata;
 
@@ -29,7 +47,12 @@ namespace readers {
 		}
 	};
 
-	struct FbxConverter {
+	typedef void (*TextureInfoCallback)(std::map<std::string, TextureFileInfo> &textures);
+
+	bool FbxConverter_ImportCB(void *pArgs, float pPercentage, const char *pStatus);
+
+	class FbxConverter : public Reader {
+	public:
 		FbxScene *scene;
 		FbxManager *manager;
 
@@ -38,75 +61,132 @@ namespace readers {
 
 		// Helper maps/lists, resources in those will not be disposed
 		std::map<FbxGeometry *, FbxMeshInfo *> fbxMeshMap;
-		std::map<FbxSurfaceMaterial *, Material *> materialsMap;
+		std::map<std::string, Material *> materialsMap;
 		std::map<std::string, TextureFileInfo> textureFiles;
-		std::map<FbxMeshInfo *, std::vector<std::vector<MeshPart *> > > meshParts;
+		std::map<FbxMeshInfo *, std::vector<std::vector<MeshPart *> > > meshParts; //[FbxMeshInfo][materialIndex][boneIndex]
 		std::map<const FbxNode *, Node *> nodeMap;
 
-		/** The maximum allowed amount of vertices in one mesh, only used when deciding to merge meshes. */
-		unsigned int maxVertexCount;
-		/** The maximum allowed amount of indices in one mesh, only used when deciding to merge meshes. */
-		unsigned int maxIndexCount;
-		/** The maximum allowed amount of bone weights in one vertex, if a vertex exceeds this amount it will clipped on importance. */
-		unsigned int maxVertexBoneCount;
-		/** Always use maxVertexBoneCount for blendWeights, this might help merging meshes. */
-		bool forceMaxVertexBoneCount;
-		/** The maximum allowed amount of bones in one nodepart, if a meshpart exceeds this amount it will be split up in parts. */
-		unsigned int maxNodePartBoneCount;
-		/** Whether to flip the y-component of textures coordinates. */
-		bool flipV;
-		/** Whether to pack colors into one float. */
-		bool packColors;
+		Settings *settings;
+		fbxconv::log::Log *log;
+		TextureInfoCallback textureCallback;
+
 		/** Temp array for transforming uvs, needs to be better defined. */
 		Matrix3<float> uvTransforms[8];
-		
-		FbxConverter(const char * const &filename, const bool &packColors = false, const unsigned int &maxVertexCount = (1<<15)-1, const unsigned int &maxIndexCount = (1<<15)-1,
-			const unsigned int &maxVertexBoneCount = 8, const bool &forceMaxVertexBoneCount = false, const unsigned int &maxNodePartBoneCount = (1 << 15)-1, 
-			const bool &flipV = false) 
-			:	scene(0), maxVertexCount(maxVertexCount), maxIndexCount(maxIndexCount), maxVertexBoneCount(maxVertexBoneCount),  
-				maxNodePartBoneCount(maxNodePartBoneCount), forceMaxVertexBoneCount(forceMaxVertexBoneCount), flipV(flipV), packColors(packColors) {
+		/** The original axis system the FBX file used (always converted defaultUpAxis, defaultFrontAxis and defaultCoordSystem) */
+		FbxAxisSystem axisSystem;
+		/** The original system units the FBX file used */
+		FbxSystemUnit systemUnits;
+		static const FbxAxisSystem::EUpVector defaultUpAxis = FbxAxisSystem::eYAxis;
+		static const FbxAxisSystem::EFrontVector defaultFrontAxis = FbxAxisSystem::eParityOdd;
+		static const FbxAxisSystem::ECoordSystem defaultCoordSystem = FbxAxisSystem::eRightHanded;
+
+		const char *placeHolderMaterialName = "FBXCONV_PLACEHOLDER_MATERIAL";
+
+		//const char * const &filename, 
+		//const bool &packColors = false, const unsigned int &maxVertexCount = (1<<15)-1, const unsigned int &maxIndexCount = (1<<15)-1,
+			//const unsigned int &maxVertexBoneCount = 8, const bool &forceMaxVertexBoneCount = false, const unsigned int &maxNodePartBoneCount = (1 << 15)-1, 
+			//const bool &flipV = false
+
+		FbxConverter(fbxconv::log::Log *log, TextureInfoCallback textureCallback) 
+			:	log(log), scene(0), textureCallback(textureCallback) {
 
 			manager = FbxManager::Create();
 			manager->SetIOSettings(FbxIOSettings::Create(manager, IOSROOT));
+			manager->GetIOSettings()->SetBoolProp(IMP_FBX_GLOBAL_SETTINGS, true);
+		}
+
+		bool importCallback(float pPercentage, const char *pStatus) {
+			log->progress(log::pSourceLoadFbxImport, pPercentage, pStatus);
+			return true;
+		}
+
+		bool load(Settings *settings) {
+			this->settings = settings;
+
 			FbxImporter* const &importer = FbxImporter::Create(manager, "");
 
-			if (importer->Initialize(filename, -1, manager->GetIOSettings())) {
+			if (settings->verbose)
+				importer->SetProgressCallback(FbxConverter_ImportCB, this);
+
+			importer->ParseForGlobalSettings(true);
+			importer->ParseForStatistics(true);
+
+			if (importer->Initialize(settings->inFile.c_str(), -1, manager->GetIOSettings())) {
+				importer->GetAxisInfo(&axisSystem, &systemUnits);
 				scene = FbxScene::Create(manager,"__FBX_SCENE__");
 				importer->Import(scene);
-			} else
-				printf("ERROR: %s\n", importer->GetError().GetLastErrorString());
+			}
+			else {
+				log->error(fbxconv::log::eSourceLoadFbxSdk, importer->GetStatus().GetCode(), importer->GetStatus().GetErrorString());
+            }
 
 			importer->Destroy();
 
 			if (scene) {
-				prefetchMeshes();
-				fetchMaterials();
-				fetchTextureBounds();
+				FbxAxisSystem axis(defaultUpAxis, defaultFrontAxis, defaultCoordSystem);
+				axis.ConvertScene(scene);
 			}
+			if (scene)
+				checkNodes();
+			if (scene)
+				prefetchMeshes();
+			if (scene)
+				fetchMaterials();
+			if (scene)
+				fetchTextureBounds();
+			return !(scene == 0);
 		}
 
-		~FbxConverter() {
+		virtual ~FbxConverter() {
 			for (std::vector<FbxMeshInfo *>::iterator itr = meshInfos.begin(); itr != meshInfos.end(); ++itr)
 				delete (*itr);
 			manager->Destroy();
 		}
 
-		bool convert(Model * const &model, const bool &flipV) {
+		/** Check all the nodes within the scene for any incompatibility issues. */
+		void checkNodes() {
+			FbxNode * root = scene->GetRootNode();
+			for (int i = 0; i < root->GetChildCount(); i++)
+				checkNode(root->GetChild(i));
+		}
+
+		/** Recursively check the node for any incompatibility issues. */
+		void checkNode(FbxNode * const &node) {
+			FbxTransform::EInheritType inheritType;
+			node->GetTransformationInheritType(inheritType);
+			if (inheritType == FbxTransform::eInheritRrSs) {
+				log->warning(log::wSourceLoadFbxNodeRrSs, node->GetName());
+				node->SetTransformationInheritType(FbxTransform::eInheritRSrs);
+			}
+			for (int i = 0; i < node->GetChildCount(); i++)
+				checkNode(node->GetChild(i));
+		}
+
+		virtual bool convert(Model * const &model) {
+			if (!scene) {
+				log->error(log::eSourceLoadGeneral);
+				return false;
+			}
+			if (textureCallback)
+				textureCallback(textureFiles);
 			for (int i = 0; i < 8; i++) {
 				uvTransforms[i].idt();
-				if (flipV)
+				if (settings->flipV)
 					uvTransforms[i].translate(0.f, 1.f).scale(1.f, -1.f);
 			}
 
-			for (std::map<FbxSurfaceMaterial *, Material *>::iterator it = materialsMap.begin(); it != materialsMap.end(); ++it) {
+			addMesh(model);
+			addNode(model);
+
+			for (std::vector<Node *>::iterator itr = model->nodes.begin(); itr != model->nodes.end(); ++itr)
+				updateNode(model, *itr);
+
+			for (std::map<std::string, Material *>::iterator it = materialsMap.begin(); it != materialsMap.end(); ++it) {
 				model->materials.push_back(it->second);
 				for (std::vector<Material::Texture *>::iterator tt = it->second->textures.begin(); tt != it->second->textures.end(); ++tt)
 					(*tt)->path = textureFiles[(*tt)->path].path;
 			}
-			addMesh(model);
-			addNode(model);
-			for (std::vector<Node *>::iterator itr = model->nodes.begin(); itr != model->nodes.end(); ++itr)
-				updateNode(model, *itr);
+
 			addAnimations(model, scene);
 			return true;
 		}
@@ -120,6 +200,10 @@ namespace readers {
 				return;
 			}
 
+			if (model->getNode(node->GetName())) {
+				log->warning(log::wSourceConvertFbxDuplicateNodeId, node->GetName());
+				return;
+			}
 			Node *n = new Node(node->GetName());
 			n->source = node;
 			nodeMap[node] = n;
@@ -133,32 +217,45 @@ namespace readers {
 		}
 
 		void updateNode(Model * const &model, Node * const &node) {
-			FbxAMatrix *m = &(node->source->EvaluateLocalTransform());
-			set<3>(node->transform.translation, m->GetT().mData);
-			set<4>(node->transform.rotation, m->GetQ().mData);
-			set<3>(node->transform.scale, m->GetS().mData);
+			FbxAMatrix &m = node->source->EvaluateLocalTransform();
+			set<3>(node->transform.translation, m.GetT().mData);
+			set<4>(node->transform.rotation, m.GetQ().mData);
+			set<3>(node->transform.scale, m.GetS().mData);
 
 			if (fbxMeshMap.find(node->source->GetGeometry()) != fbxMeshMap.end()) {
 				FbxMeshInfo *meshInfo = fbxMeshMap[node->source->GetGeometry()];
 				std::vector<std::vector<MeshPart *> > &parts = meshParts[meshInfo];
 				const int matCount = node->source->GetMaterialCount();
-				for (int i = 0; i < matCount && i < parts.size(); i++) {
-					Material *material = materialsMap[node->source->GetMaterial(i)];
+				if (parts.size() > 0 && matCount < parts.size())
+					log->warning(log::wSourceConvertFbxNoPartMaterial, node->id.c_str(), parts.size() - matCount);
+				for (int i = 0; i < parts.size(); i++) {
+					Material *material = i < matCount ? getMaterial(node->source->GetMaterial(i)->GetName()) : getPlaceholderMaterial();
 					for (int j = 0; j < parts[i].size(); j++) {
-						NodePart *nodePart = new NodePart();
-						node->parts.push_back(nodePart);
-						nodePart->material = material;
-						nodePart->meshPart = parts[i][j];
-						for (int k = 0; k < nodePart->meshPart->sourceBones.size(); k++)
-							nodePart->bones.push_back(nodeMap[nodePart->meshPart->sourceBones[k]]);
+						if (parts[i][j]) {
+							NodePart *nodePart = new NodePart();
+							node->parts.push_back(nodePart);
+							nodePart->material = material;
+							nodePart->meshPart = parts[i][j];
+							for (int k = 0; k < nodePart->meshPart->sourceBones.size(); k++) {
+								if (nodeMap.find(nodePart->meshPart->sourceBones[k]->GetLink()) != nodeMap.end()) {
+									std::pair<Node*, FbxAMatrix> p;
+									p.first = nodeMap[nodePart->meshPart->sourceBones[k]->GetLink()];
+									getBindPose(node->source, nodePart->meshPart->sourceBones[k], p.second);
+									nodePart->bones.push_back(p);
+								}
+								else {
+									log->warning(log::wSourceConvertFbxInvalidBone, node->id.c_str(), nodePart->meshPart->sourceBones[k]->GetLink()->GetName());
+								}
+							}
 
-						nodePart->uvMapping.resize(meshInfo->uvCount);
-						for (int k = 0; k < meshInfo->uvCount; k++) {
-							for (std::vector<Material::Texture *>::iterator it = material->textures.begin(); it != material->textures.end(); ++it) {
-								FbxFileTexture *texture = (*it)->source;
-								TextureFileInfo &info = textureFiles[texture->GetFileName()];
-								if (meshInfo->uvMapping[k] == texture->UVSet.Get().Buffer()) {
-									nodePart->uvMapping[k].push_back(*it);
+							nodePart->uvMapping.resize(meshInfo->uvCount);
+							for (unsigned int k = 0; k < meshInfo->uvCount; k++) {
+								for (std::vector<Material::Texture *>::iterator it = material->textures.begin(); it != material->textures.end(); ++it) {
+									FbxFileTexture *texture = (*it)->source;
+									TextureFileInfo &info = textureFiles[texture->GetFileName()];
+									if (meshInfo->uvMapping[k] == texture->UVSet.Get().Buffer()) {
+										nodePart->uvMapping[k].push_back(*it);
+									}
 								}
 							}
 						}
@@ -170,6 +267,43 @@ namespace readers {
 				updateNode(model, *itr);
 		}
 
+		FbxAMatrix convertMatrix(const FbxMatrix& mat)
+		{
+			FbxVector4 trans, shear, scale;
+			FbxQuaternion rot;
+			double sign;
+			mat.GetElements(trans, rot, shear, scale, sign);
+			FbxAMatrix ret;
+			ret.SetT(trans);
+			ret.SetQ(rot);
+			ret.SetS(scale);
+			return ret;
+		}
+
+		// Get the geometry offset to a node. It is never inherited by the children.
+		FbxAMatrix GetGeometry(FbxNode* pNode)
+		{
+			const FbxVector4 lT = pNode->GetGeometricTranslation(FbxNode::eSourcePivot);
+			const FbxVector4 lR = pNode->GetGeometricRotation(FbxNode::eSourcePivot);
+			const FbxVector4 lS = pNode->GetGeometricScaling(FbxNode::eSourcePivot);
+
+			return FbxAMatrix(lT, lR, lS);
+		}
+
+		void getBindPose(FbxNode * target, FbxCluster *cluster, FbxAMatrix &out) {
+			if (cluster->GetLinkMode() == FbxCluster::eAdditive)
+				log->warning(log::wSourceConvertFbxAdditiveBones, target->GetName());
+
+			FbxAMatrix reference;
+			cluster->GetTransformMatrix(reference);
+			FbxAMatrix refgem = GetGeometry(target);
+			reference *= refgem;
+			FbxAMatrix init;
+			cluster->GetTransformLinkMatrix(init);
+			FbxAMatrix relinit = init.Inverse() * reference;
+			out = relinit.Inverse();
+		}
+
 		// Iterate throught the nodes (from the leaves up) and the meshes it references. This might help that meshparts that are closer together are more likely to be merged
 		// Note that in the end this is just another way of adding all items in meshInfos.
 		void addMesh(Model * const &model, FbxNode * node = 0) {
@@ -179,8 +313,14 @@ namespace readers {
 			for (int i = 0; i < childCount; i++)
 				addMesh(model, node->GetChild(i));
 
-			if (fbxMeshMap.find(node->GetGeometry()) != fbxMeshMap.end())
-				addMesh(model, fbxMeshMap[node->GetGeometry()], node);
+			FbxGeometry *geometry = node->GetGeometry();
+			if (geometry) {
+				if (fbxMeshMap.find(geometry) != fbxMeshMap.end())
+					addMesh(model, fbxMeshMap[geometry], node);
+				else
+					log->debug("Geometry(%X) of %s not found in fbxMeshMap[size=%d]", (unsigned long)(geometry), node->GetName(), fbxMeshMap.size());
+			}
+			
 		}
 
 		void addMesh(Model * const &model, FbxMeshInfo * const &meshInfo, FbxNode * const &node) {
@@ -197,16 +337,12 @@ namespace readers {
 
 			std::vector<std::vector<MeshPart *> > &parts = meshParts[meshInfo];
 			parts.resize(meshInfo->meshPartCount);
-			static unsigned int meshPartCounter = 0;
 			for (int i = 0; i < meshInfo->meshPartCount; i++) {
-				const unsigned int n = meshInfo->partBones[i].size();
-				const unsigned int m = n == 0 ? 1 : n;
+				const int n = meshInfo->partBones[i].size();
+				const int m = n == 0 ? 1 : n;
 				parts[i].resize(m);
 				for (int j = 0; j < m; j++) {
-					std::stringstream ss;
-					ss << "mpart" << ++meshPartCounter;
 					MeshPart *part = new MeshPart();
-					part->id = ss.str();
 					part->primitiveType = PRIMITIVETYPE_TRIANGLES;
 					parts[i][j] = part;
 					mesh->parts.push_back(part);
@@ -220,8 +356,15 @@ namespace readers {
 			unsigned int pidx = 0;
 			for (unsigned int poly = 0; poly < meshInfo->polyCount; poly++) {
 				unsigned int ps = meshInfo->mesh->GetPolygonSize(poly);
-				MeshPart * const &part = parts[meshInfo->polyPartMap[poly]][meshInfo->polyPartBonesMap[poly]];
-				Material * const &material = materialsMap[node->GetMaterial(meshInfo->polyPartMap[poly])];
+				unsigned int pi = meshInfo->polyPartMap[poly];
+				unsigned int bi = meshInfo->polyPartBonesMap[poly];
+				if (pi >= parts.size() || bi >= parts[pi].size()) {
+					log->warning(log::wSourceConvertFbxInvalidMesh, node->GetName());
+					delete[] vertex;
+					return;
+				}
+				MeshPart * const &part = parts[pi][bi];
+				//Material * const &material = materialsMap[node->GetMaterial(meshInfo->polyPartMap[poly])];
 
 				for (unsigned int i = 0; i < ps; i++) {
 					const unsigned int v = meshInfo->mesh->GetPolygonVertex(poly, i);
@@ -230,12 +373,33 @@ namespace readers {
 					pidx++;
 				}
 			}
+
+			int idx = 0;
+			for (int i = parts.size() - 1; i >= 0; --i) {
+				for (int j = parts[i].size() - 1; j >= 0; --j) {
+					MeshPart *part = parts[i][j];
+					if (!part->indices.size()) {
+						parts[i][j] = 0;
+						mesh->parts.erase(std::remove(mesh->parts.begin(), mesh->parts.end(), part), mesh->parts.end());
+						log->warning(log::wSourceConvertFbxEmptyMeshpart, node->GetName(), node->GetMaterial(i)->GetName());
+						delete part;
+					}
+					else {
+						std::stringstream ss;
+						ss << meshInfo->id.c_str() << "_part" << (++idx);
+						part->id = ss.str();
+					}
+				}
+			}
+
 			delete[] vertex;
 		}
 
 		Mesh *findReusableMesh(Model * const &model, const Attributes &attributes, const unsigned int &vertexCount) {
 			for (std::vector<Mesh *>::iterator itr = model->meshes.begin(); itr != model->meshes.end(); ++itr)
-				if ((*itr)->attributes == attributes && ((*itr)->vertices.size() / (*itr)->vertexSize) + vertexCount <= maxVertexCount && (*itr)->indexCount() + vertexCount <= maxIndexCount)
+				if ((*itr)->attributes == attributes && 
+					((*itr)->vertices.size() / (*itr)->vertexSize) + vertexCount <= settings->maxVertexCount && 
+					(*itr)->indexCount() + vertexCount <= settings->maxIndexCount)
 					return (*itr);
 			return 0;
 		}
@@ -254,11 +418,11 @@ namespace readers {
 			const int matCount = node->GetMaterialCount();
 			for (int i = 0; i < matCount; i++) {
 				FbxSurfaceMaterial *material = node->GetMaterial(i);
-				Material *mat = materialsMap[material];
+				Material *mat = getMaterial(material->GetName());
 				for (std::vector<Material::Texture *>::iterator it = mat->textures.begin(); it != mat->textures.end(); ++it) {
 					FbxFileTexture *texture = (*it)->source;
 					TextureFileInfo &info = textureFiles[texture->GetFileName()];
-					for (int k = 0; k < meshInfo->uvCount; k++) {
+					for (unsigned int k = 0; k < meshInfo->uvCount; k++) {
 						if (meshInfo->uvMapping[k] == texture->UVSet.Get().Buffer()) {
 							const int idx = 4 * (i * meshInfo->uvCount + k);
 							if (*(int*)&info.bounds[0] == -1 || meshInfo->partUVBounds[idx] < info.bounds[0])
@@ -277,31 +441,70 @@ namespace readers {
 			}
 		}
 
+		const char *getGeometryName(const FbxGeometry * const &g) {
+			static char buff[512];
+			const char *name = g->GetName();
+			if (name && strlen(name) > 0)
+				return name;
+			int c = g->GetNodeCount();
+			strcpy(buff, "shape(");
+			int idx = strlen(buff);
+			for (int i = 0; i < c; i++) {
+				const char *v = g->GetNode(i)->GetName();
+				const int l = strlen(v);
+				if (idx + l >= sizeof(buff))
+					break;
+				if (i > 0)
+					buff[idx++] = ',';
+				strcpy(&buff[idx], v);
+				idx += l;
+			}
+			buff[idx++] = ')';
+			buff[idx] = '\0';
+			return buff;
+		}
+
 		void prefetchMeshes() {
+			{
+				int cnt = scene->GetGeometryCount();
+				FbxGeometryConverter converter(manager);
+				std::vector<FbxGeometry *> triangulate;
+				for (int i = 0; i < scene->GetGeometryCount(); ++i) {
+					FbxGeometry * geometry = scene->GetGeometry(i);
+					if (!geometry->Is<FbxMesh>() || !((FbxMesh*)geometry)->IsTriangleMesh())
+						triangulate.push_back(geometry);
+				}
+				for (std::vector<FbxGeometry *>::iterator it = triangulate.begin(); it != triangulate.end(); ++it)
+				{
+					log->status(log::sSourceConvertFbxTriangulate, getGeometryName(*it), (*it)->GetClassId().GetName());
+					FbxNodeAttribute * const attr = converter.Triangulate(*it, true);
+				}
+			}
 			int cnt = scene->GetGeometryCount();
-			FbxGeometryConverter converter(manager);
-			for (int i = 0; i < cnt; i++) {
-				FbxGeometry * const &geometry = scene->GetGeometry(i);
+			for (int i = 0; i < cnt; ++i) {
+				FbxGeometry * geometry = scene->GetGeometry(i);
 				if (fbxMeshMap.find(geometry) == fbxMeshMap.end()) {
-					FbxMesh *mesh;
-					if (geometry->Is<FbxMesh>() && ((FbxMesh*)geometry)->IsTriangleMesh())
-						mesh = (FbxMesh*)geometry;
-					else {
-						printf("Triangulating %s geometry\n", geometry->GetClassId().GetName());
-						if (geometry->Is<FbxNurbs>())
-							mesh = converter.TriangulateNurbs((FbxNurbs*)geometry);
-						else if (geometry->Is<FbxPatch>())
-							mesh = converter.TriangulatePatch((FbxPatch*)geometry);
-						else if (geometry->Is<FbxMesh>())
-							mesh = converter.TriangulateMesh((FbxMesh*)geometry);
-						else
-							throw "Unsupported geometry found";
+					if (!geometry->Is<FbxMesh>()) {
+						log->warning(log::wSourceConvertFbxCantTriangulate, geometry->GetClassId().GetName());
+						continue;
 					}
-					FbxMeshInfo * const info = new FbxMeshInfo(mesh, packColors, maxVertexBoneCount, forceMaxVertexBoneCount, maxNodePartBoneCount);
+					FbxMesh *mesh = (FbxMesh*)geometry;
+					int indexCount = (mesh->GetPolygonCount() * 3);
+					log->verbose(log::iSourceConvertFbxMeshInfo, getGeometryName(mesh), mesh->GetPolygonCount(), indexCount, mesh->GetControlPointsCount());
+					if (indexCount > settings->maxIndexCount)
+						log->warning(log::wSourceConvertFbxExceedsIndices, indexCount, settings->maxIndexCount);
+					if (mesh->GetElementMaterialCount() <= 0) {
+						log->error(log::wSourceConvertFbxNoMaterial, getGeometryName(mesh));
+						continue;
+					}
+					FbxMeshInfo * const info = new FbxMeshInfo(log, mesh, settings->packColors, settings->maxVertexBonesCount, settings->forceMaxVertexBoneCount, settings->maxNodePartBonesCount);
 					meshInfos.push_back(info);
-					fbxMeshMap[geometry] = info;
+					fbxMeshMap[mesh] = info;
 					if (info->bonesOverflow)
-						printf("Warning: mesh contains more blendweights per polygon than the specified maximum.\n");
+						log->warning(log::wSourceConvertFbxExceedsBones);
+				}
+				else {
+					log->warning(log::wSourceConvertFbxDuplicateMesh, getGeometryName(geometry));
 				}
 			}
 		}
@@ -310,45 +513,104 @@ namespace readers {
 			int cnt = scene->GetMaterialCount();
 			for (int i = 0; i < cnt; i++) {
 				FbxSurfaceMaterial * const &material = scene->GetMaterial(i);
-				if (materialsMap.find(material) == materialsMap.end())
-					materialsMap[material] = createMaterial(material);
+				if (materialsMap.find(material->GetName()) == materialsMap.end())
+					materialsMap[material->GetName()] = createMaterial(material);
 			}
 		}
 
-		Material *createMaterial(FbxSurfaceMaterial * const &material) {
-			if ((!material->Is<FbxSurfaceLambert>()) || GetImplementation(material, FBXSDK_IMPLEMENTATION_HLSL) || GetImplementation(material, FBXSDK_IMPLEMENTATION_CGFX))
-				throw "Unsupported material type";
-			
+		Material *getMaterial(std::string name) {
+			std::map<std::string, Material*>::iterator it = materialsMap.find(name);
+			if (it == materialsMap.end()) {
+				log->warning(log::wSourceConvertFbxMaterialNotFound, name.c_str());
+				return getPlaceholderMaterial();
+			}
+			return it->second;
+		}
+
+		Material *getPlaceholderMaterial() {
+			std::map<std::string, Material*>::iterator it = materialsMap.find(placeHolderMaterialName);
+			if (it != materialsMap.end())
+				return it->second;
+			Material * const result = new Material();
+			result->diffuse.set(1.f, 0.f, 0.f);
+			result->id = placeHolderMaterialName;
+			materialsMap[result->id] = result;
+			return result;
+		}
+
+		Material *createMaterial(FbxSurfaceMaterial * const &material) {	
 			Material * const result = new Material();
 			result->source = material;
 			result->id = material->GetName();
 
-			FbxSurfaceLambert * const &lambert = (FbxSurfaceLambert *)material;
-			set<3>(result->ambient, lambert->Ambient.Get().mData);
-			set<3>(result->diffuse, lambert->Diffuse.Get().mData);
-			set<3>(result->emissive, lambert->Emissive.Get().mData);
+			if ((!material->Is<FbxSurfaceLambert>()) || GetImplementation(material, FBXSDK_IMPLEMENTATION_HLSL) || GetImplementation(material, FBXSDK_IMPLEMENTATION_CGFX)) {
+				if (!material->Is<FbxSurfaceLambert>())
+					log->warning(log::wSourceConvertFbxMaterialUnsupported, result->id.c_str());
+				if (GetImplementation(material, FBXSDK_IMPLEMENTATION_HLSL))
+					log->warning(log::wSourceConvertFbxMaterialHLSL, result->id.c_str());
+				if (GetImplementation(material, FBXSDK_IMPLEMENTATION_CGFX))
+					log->warning(log::wSourceConvertFbxMaterialCgFX, result->id.c_str());
+				result->diffuse.set(1.f, 0.f, 0.f);
+				return result;
+			}
 
-			addTextures(result->textures, lambert->Ambient, Material::Texture::Ambient);
-			addTextures(result->textures, lambert->Diffuse, Material::Texture::Diffuse);
-			addTextures(result->textures, lambert->Emissive, Material::Texture::Emissive);
-			addTextures(result->textures, lambert->Bump, Material::Texture::Bump);
-			addTextures(result->textures, lambert->NormalMap, Material::Texture::Normal);
-			result->opacity = 1.f - (float)lambert->TransparencyFactor.Get();
+			FbxSurfaceLambert * const &lambert = (FbxSurfaceLambert *)material;
+			if (lambert->Ambient.IsValid())
+				result->ambient.set(lambert->Ambient.Get().mData);
+			if (lambert->Diffuse.IsValid())
+				result->diffuse.set(lambert->Diffuse.Get().mData);
+			if (lambert->Emissive.IsValid()) {
+				result->emissiveFactor.set(lambert->EmissiveFactor.Get());
+				result->emissive.set(lambert->Emissive.Get().mData);
+			}
+
+			addTextures(result->id.c_str(), result->textures, lambert->Ambient, Material::Texture::Ambient);
+			addTextures(result->id.c_str(), result->textures, lambert->Diffuse, Material::Texture::Diffuse);
+			addTextures(result->id.c_str(), result->textures, lambert->Emissive, Material::Texture::Emissive);
+			addTextures(result->id.c_str(), result->textures, lambert->Bump, Material::Texture::Bump);
+			addTextures(result->id.c_str(), result->textures, lambert->NormalMap, Material::Texture::Normal);
+
+			if (lambert->TransparencyFactor.IsValid() && lambert->TransparentColor.IsValid()) {
+				FbxDouble factor = lambert->TransparencyFactor.Get();
+				FbxDouble3 color = lambert->TransparentColor.Get();
+				FbxDouble trans = 1.0f - ((color[0] * factor + color[1] * factor + color[2] * factor) / 3.0);
+				result->opacity.set((float)trans);
+			}
+			else if (lambert->TransparencyFactor.IsValid())
+				result->opacity.set(1.f - lambert->TransparencyFactor.Get());
+			else if (lambert->TransparentColor.IsValid()) {
+				FbxDouble3 color = lambert->TransparentColor.Get();
+				result->opacity.set((color[0] + color[1] + color[2]) / 3.0);
+			}
 
 			if (!material->Is<FbxSurfacePhong>())
 				return result;
 
 			FbxSurfacePhong * const &phong = (FbxSurfacePhong *)material;
-			set<3>(result->specular, phong->Specular.Get().mData);
-			addTextures(result->textures, phong->Specular, Material::Texture::Specular);
-			addTextures(result->textures, phong->Reflection, Material::Texture::Reflection);
+
+			if (phong->Specular.IsValid())
+				result->specular.set(phong->Specular.Get().mData);
+			if (phong->Shininess.IsValid())
+				result->shininess.set((float)phong->Shininess.Get());
+
+			addTextures(result->id.c_str(), result->textures, phong->Specular, Material::Texture::Specular);
+			addTextures(result->id.c_str(), result->textures, phong->Reflection, Material::Texture::Reflection);
 			return result;
 		}
 
-		inline void addTextures(std::vector<Material::Texture *> &textures, const FbxProperty &prop,  const Material::Texture::Usage &usage) {
-			const unsigned int n = prop.GetSrcObjectCount<FbxFileTexture>();
-			for (unsigned int i = 0; i < n; i++)
-				add_if_not_null(textures, createTexture(prop.GetSrcObject<FbxFileTexture>(i), usage));
+		void addTextures(const char *materialName, std::vector<Material::Texture *> &textures, const FbxProperty &prop,  const Material::Texture::Usage &usage) {
+			const unsigned int ftCount = prop.GetSrcObjectCount<FbxFileTexture>();
+			for (unsigned int ft = 0; ft < ftCount; ++ft)
+				add_if_not_null(textures, createTexture(prop.GetSrcObject<FbxFileTexture>(ft), usage));
+			const unsigned int ltCount = prop.GetSrcObjectCount<FbxLayeredTexture>();
+			for (unsigned int lt = 0; lt < ltCount; ++lt) {
+				FbxLayeredTexture * const &layeredTexture = prop.GetSrcObject<FbxLayeredTexture>(lt);
+				const unsigned int ftCount = layeredTexture->GetSrcObjectCount<FbxFileTexture>();
+				if (ftCount > 1)
+					log->warning(log::wSourceConvertFbxLayeredTexture, materialName);
+				for (unsigned int ft = 0; ft < ftCount; ++ft)
+					add_if_not_null(textures, createTexture(layeredTexture->GetSrcObject<FbxFileTexture>(ft), usage));
+			}
 		}
 
 		Material::Texture *createTexture(FbxFileTexture * const &texture, const Material::Texture::Usage &usage = Material::Texture::Unknown) {
@@ -379,7 +641,13 @@ namespace readers {
 			static std::vector<Keyframe *> frames;
 			static std::map<FbxNode *, AnimInfo> affectedNodes;
 			affectedNodes.clear();
-			
+
+			FbxTimeSpan animTimeSpan = animStack->GetLocalTimeSpan();
+			float animStart = (float)(animTimeSpan.GetStart().GetMilliSeconds());
+			float animStop = (float)(animTimeSpan.GetStop().GetMilliSeconds());
+			if (animStop <= animStart)
+				animStop = 999999999.0f;
+
 			// Could also use animStack->GetLocalTimeSpan and animStack->BakeLayers, but its not guaranteed to be correct
 			const int layerCount = animStack->GetMemberCount<FbxAnimLayer>();
 			for (int l = 0; l < layerCount; l++) {
@@ -395,8 +663,17 @@ namespace readers {
 						FbxNode *node = static_cast<FbxNode *>(prop.GetFbxObject());
 						if (node) {
 							FbxString propName = prop.GetName();
+							if ( propName == "DeformPercent" )
+							{
+								// When using this propName in model an unhandled exception is launched in sentence node->LclTranslation.GetName()
+								log->warning(log::wSourceConvertFbxSkipPropname, animStack->GetName(), (const char *)propName);
+								continue;
+							}
+
 							// Only add translation, scaling or rotation
-							if (propName != node->LclTranslation.GetName() && propName != node->LclScaling.GetName() && propName != node->LclRotation.GetName())
+							if ((!node->LclTranslation.IsValid() || propName != node->LclTranslation.GetName()) && 
+								(!node->LclScaling.IsValid() || propName != node->LclScaling.GetName()) &&
+								(!node->LclRotation.IsValid() || propName != node->LclRotation.GetName()))
 								continue;
 							FbxAnimCurve *curve;
 							AnimInfo ts;
@@ -404,11 +681,11 @@ namespace readers {
 							ts.rotate = propName == node->LclRotation.GetName();
 							ts.scale = propName == node->LclScaling.GetName();
 							if (curve = prop.GetCurve(layer, FBXSDK_CURVENODE_COMPONENT_X))
-								updateAnimTime(curve, ts);
+								updateAnimTime(curve, ts, animStart, animStop);
 							if (curve = prop.GetCurve(layer, FBXSDK_CURVENODE_COMPONENT_Y))
-								updateAnimTime(curve, ts);
+								updateAnimTime(curve, ts, animStart, animStop);
 							if (curve = prop.GetCurve(layer, FBXSDK_CURVENODE_COMPONENT_Z))
-								updateAnimTime(curve, ts);
+								updateAnimTime(curve, ts, animStart, animStop);
 							//if (ts.start < ts.stop)
 								affectedNodes[node] += ts;
 						}
@@ -422,7 +699,7 @@ namespace readers {
 			Animation *animation = new Animation();
 			model->animations.push_back(animation);
 			animation->id = animStack->GetName();
-			animStack->GetScene()->GetEvaluator()->SetContext(animStack);
+			animStack->GetScene()->SetCurrentAnimationStack(animStack);
 
 			// Add the NodeAnimations to the Animation
 			for (std::map<FbxNode *, AnimInfo>::const_iterator itr = affectedNodes.begin(); itr != affectedNodes.end(); itr++) {
@@ -436,13 +713,14 @@ namespace readers {
 				nodeAnim->rotate = (*itr).second.rotate;
 				nodeAnim->scale = (*itr).second.scale;
 				const float stepSize = (*itr).second.framerate <= 0.f ? (*itr).second.stop - (*itr).second.start : 1000.f / (*itr).second.framerate;
+				const float last = (*itr).second.stop + stepSize * 0.5f;
 				FbxTime fbxTime;
 				// Calculate all keyframes upfront
-				for (float time = (*itr).second.start; time <= (*itr).second.stop; time += stepSize) {
+				for (float time = (*itr).second.start; time <= last; time += stepSize) {
 					time = std::min(time, (*itr).second.stop);
 					fbxTime.SetMilliSeconds((FbxLongLong)time);
 					Keyframe *kf = new Keyframe();
-					kf->time = time;
+					kf->time = (time - animStart);
 					FbxAMatrix *m = &(*itr).first->EvaluateLocalTransform(fbxTime);
 					FbxVector4 v = m->GetT();
 					kf->translation[0] = (float)v.mData[0];
@@ -468,14 +746,14 @@ namespace readers {
 			}
 		}
 
-		inline void updateAnimTime(FbxAnimCurve *const &curve, AnimInfo &ts) {
+		inline void updateAnimTime(FbxAnimCurve *const &curve, AnimInfo &ts, const float &animStart, const float &animStop) {
 			FbxTimeSpan fts;
 			curve->GetTimeInterval(fts);
 			const FbxTime start = fts.GetStart();
 			const FbxTime stop = fts.GetStop();
-			ts.start = std::min(ts.start, (float)(start.GetMilliSeconds()));
-			ts.stop = std::max(ts.stop, (float)stop.GetMilliSeconds());
-			// Could check the nunber and type of keys (ie curve->KeyGetInterpolation) to lower the framerate
+			ts.start = std::max(animStart, std::min(ts.start, (float)(start.GetMilliSeconds())));
+			ts.stop = std::min(animStop, std::max(ts.stop, (float)stop.GetMilliSeconds()));
+			// Could check the number and type of keys (ie curve->KeyGetInterpolation) to lower the framerate
 			ts.framerate = std::max(ts.framerate, (float)stop.GetFrameRate(FbxTime::eDefaultMode));
 		}
 
@@ -502,7 +780,7 @@ namespace readers {
 
 			if (!keyframes.empty()) {
 				anim->keyframes.push_back(keyframes[0]);
-				const int last = keyframes.size()-1;
+				const int last = (int)keyframes.size()-1;
 				Keyframe *k1 = keyframes[0], *k2, *k3;
 				for (int i = 1; i < last; i++) {
 					k2 = keyframes[i];
@@ -521,19 +799,19 @@ namespace readers {
 			}
 		}
 
-		inline bool cmp(const double &v1, const double &v2, const double &epsilon = 0.000001) {
+		inline bool cmp(const float &v1, const float &v2, const float &epsilon = 0.000001) {
 			const double d = v1 - v2;
 			return ((d < 0.f) ? -d : d) < epsilon;
 		}
 
-		inline bool cmp(const double *v1, const double *v2, const unsigned int &count) {
+		inline bool cmp(const float *v1, const float *v2, const unsigned int &count) {
 			for (unsigned int i = 0; i < count; i++)
 				if (!cmp(v1[i],v2[i]))
 					return false;
 			return true;
 		}
 
-		inline bool isLerp(const double *v1, const double &t1, const double *v2, const double &t2, const double *v3, const double &t3, const int size) {
+		inline bool isLerp(const float *v1, const float &t1, const float *v2, const float &t2, const float *v3, const float &t3, const int size) {
 			const double d = (t2 - t1) / (t3 - t1);
 			for (int i = 0; i < size; i++)
 				if (!cmp(v2[i], v1[i] + d * (v3[i] - v1[i])))
@@ -556,5 +834,9 @@ namespace readers {
 				dst.push_back(value);
 		}
 	};
+
+	bool FbxConverter_ImportCB(void *pArgs, float pPercentage, const char *pStatus) {
+		return ((FbxConverter*)pArgs)->importCallback(pPercentage, pStatus);
+	}
 } }
 #endif //FBXCONV_READERS_FBXCONVERTER_H
